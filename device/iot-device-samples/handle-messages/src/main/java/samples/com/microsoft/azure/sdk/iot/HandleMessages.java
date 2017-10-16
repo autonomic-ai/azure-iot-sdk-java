@@ -7,9 +7,19 @@ import com.microsoft.azure.sdk.iot.device.DeviceClient;
 import com.microsoft.azure.sdk.iot.device.IotHubClientProtocol;
 import com.microsoft.azure.sdk.iot.device.IotHubMessageResult;
 import com.microsoft.azure.sdk.iot.device.Message;
+import com.microsoft.azure.sdk.iot.service.Device;
+import com.microsoft.azure.sdk.iot.service.FeedbackBatch;
+import com.microsoft.azure.sdk.iot.service.FeedbackReceiver;
+import com.microsoft.azure.sdk.iot.service.FeedbackRecord;
+import com.microsoft.azure.sdk.iot.service.IotHubServiceClientProtocol;
+import com.microsoft.azure.sdk.iot.service.RegistryManager;
+import com.microsoft.azure.sdk.iot.service.ServiceClient;
+import com.microsoft.azure.sdk.iot.service.exceptions.IotHubException;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.rmi.registry.Registry;
+import java.util.ArrayList;
 import java.util.Scanner;
 
 
@@ -117,44 +127,28 @@ public class HandleMessages
                     "Expected 1 or 2 arguments but received %d.\n"
                      + "The program should be called with the following args: \n"
                      + "1. [Device connection string] - String containing Hostname, Device Id & Device Key in one of the following formats: HostName=<iothub_host_name>;DeviceId=<device_id>;SharedAccessKey=<device_key>\n"
-                     + "2. (mqtt | https | amqps | amqps_ws | mqtt_ws)\n",
+                     + "2. (amqps | amqps_ws)\n",
                      args.length);
             return;
         }
 
         String connString = args[0];
-        IotHubClientProtocol protocol;
-        if (args.length == 1)
-        {
-            protocol = IotHubClientProtocol.MQTT;
-        }
-        else
+        IotHubServiceClientProtocol protocol;
+        if (true)
         {
             String protocolStr = args[1];
-            if (protocolStr.equals("https"))
+            if (protocolStr.equals("amqps"))
             {
-                protocol = IotHubClientProtocol.HTTPS;
-            }
-            else if (protocolStr.equals("amqps"))
-            {
-                protocol = IotHubClientProtocol.AMQPS;
-            }
-            else if (protocolStr.equals("mqtt"))
-            {
-                protocol = IotHubClientProtocol.MQTT;
+                protocol = IotHubServiceClientProtocol.AMQPS;
             }
             else if (protocolStr.equals("amqps_ws"))
             {
-                protocol = IotHubClientProtocol.AMQPS_WS;
-            }
-            else if (protocolStr.equals("mqtt_ws"))
-            {
-                protocol = IotHubClientProtocol.MQTT_WS;
+                protocol = IotHubServiceClientProtocol.AMQPS_WS;
             }
             else
             {
                 System.out.format(
-                      "Expected argument 2 to be one of 'mqtt', 'https', 'amqps' or 'amqps_ws' or 'mqtt_ws' but received %s\n"
+                      "Expected argument 2 to be one of 'amqps' or 'amqps_ws' but received %s\n"
                             + "The program should be called with the following args: \n"
                             + "1. [Device connection string] - String containing Hostname, Device Id & Device Key in one of the following formats: HostName=<iothub_host_name>;DeviceId=<device_id>;SharedAccessKey=<device_key>\n"
                             + "2. (mqtt | https | amqps | amqps_ws | mqtt_ws)\n",
@@ -164,38 +158,78 @@ public class HandleMessages
         }
 
         System.out.println("Successfully read input parameters.");
-        System.out.format("Using communication protocol %s.\n", protocol.name());
+//        System.out.format("Using communication protocol %s.\n", protocol.name());
 
-        DeviceClient client = new DeviceClient(connString, protocol);
+//        DeviceClient client = new DeviceClient(connString, protocol);
+
+//        System.out.println("Successfully created an IoT Hub client.");
+
+        RegistryManager registryManager = RegistryManager.createFromConnectionString(connString);
+
+//        if (protocol == IotHubClientProtocol.MQTT)
+//        {
+//            MessageCallbackMqtt callback = new MessageCallbackMqtt();
+//            Counter counter = new Counter(0);
+//            client.setMessageCallback(callback, counter);
+//        }
+//        else
+//        {
+//            MessageCallback callback = new MessageCallback();
+//            Counter counter = new Counter(0);
+//            client.setMessageCallback(callback, counter);
+//        }
+
+        try {
+            ArrayList<Device> devices = registryManager.getDevices(10000);
+
+            System.out.println("Found " + devices.size() + " devices");
+
+            for (Device device : devices) {
+                System.out.println("Device ID: " + device.getDeviceId());
+                System.out.println("Device last activity time: " + device.getLastActivityTime());
+                System.out.println("");
+            }
+        } catch (IotHubException e) {
+            e.printStackTrace();
+        }
+
+        System.out.format("Using communication protocol to query IoT Hub: %s.\n", protocol.name());
+
+        ServiceClient client = ServiceClient.createFromConnectionString(connString, protocol);
 
         System.out.println("Successfully created an IoT Hub client.");
-
-        if (protocol == IotHubClientProtocol.MQTT)
-        {
-            MessageCallbackMqtt callback = new MessageCallbackMqtt();
-            Counter counter = new Counter(0);
-            client.setMessageCallback(callback, counter);
-        }
-        else
-        {
-            MessageCallback callback = new MessageCallback();
-            Counter counter = new Counter(0);
-            client.setMessageCallback(callback, counter);
-        }
-
-        System.out.println("Successfully set message callback.");
 
         client.open();
 
         System.out.println("Opened connection to IoT Hub.");
 
+        FeedbackReceiver feedbackReceiver = client.getFeedbackReceiver();
+        feedbackReceiver.open();
+
         System.out.println("Beginning to receive messages...");
-        System.out.println("Press any key to exit...");
 
-        Scanner scanner = new Scanner(System.in);
-        scanner.nextLine();
+        while (true) {
+            try {
+                System.out.println("Entering message receiver loop...");
 
-        client.closeNow();
+                FeedbackBatch feedbackBatch = feedbackReceiver.receive(10000L);
+                if (feedbackBatch == null) {
+                    System.out.println("No messages received, polling again...");
+                    continue;
+                }
+
+                for (FeedbackRecord record : feedbackBatch.getRecords()) {
+                    System.out.println("Got message id: " + record.getOriginalMessageId());
+                    System.out.println("Status code: " + record.getStatusCode());
+                    System.out.println("Device id: " + record.getDeviceId());
+                    System.out.println("Description: " + record.getDescription());
+                }
+            } catch (InterruptedException e) {
+                break;
+            }
+        }
+
+        client.close();
 
         System.out.println("Shutting down...");
     }
